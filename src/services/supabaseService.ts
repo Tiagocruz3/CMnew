@@ -22,20 +22,32 @@ export class SupabaseService {
 
   async getCurrentUser() {
     try {
+      console.log('Getting current user...')
+      
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return null
 
-      const { data: profile, error } = await supabase
+      console.log('Fetching profile for user:', user.id)
+      
+      // Add timeout to profile fetch
+      const profilePromise = supabase
         .from('profiles')
         .select('*')
         .eq('id', user.id)
         .single()
+      
+      const profileTimeout = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Profile fetch timeout')), 8000)
+      )
+      
+      const { data: profile, error } = await Promise.race([profilePromise, profileTimeout])
 
       if (error) {
         console.error('Error fetching profile:', error)
         return null
       }
 
+      console.log('Profile fetched successfully')
       return profile
     } catch (error) {
       console.error('Error in getCurrentUser:', error)
@@ -46,7 +58,10 @@ export class SupabaseService {
   // Cases
   async getCases(): Promise<Case[]> {
     try {
-      const { data, error } = await supabase
+      console.log('Fetching cases...')
+      
+      // Add timeout to prevent hanging
+      const casesPromise = supabase
         .from('cases')
         .select(`
           *,
@@ -57,8 +72,16 @@ export class SupabaseService {
           stakeholders(*)
         `)
         .order('created_at', { ascending: false })
-
+      
+      const casesTimeout = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Cases fetch timeout')), 10000)
+      )
+      
+      const { data, error } = await Promise.race([casesPromise, casesTimeout])
+      
       if (error) throw error
+      
+      console.log(`Fetched ${data?.length || 0} cases`)
 
       // Get all unique user IDs for batch profile lookup
       const userIds = new Set<string>()
@@ -67,15 +90,33 @@ export class SupabaseService {
         if (caseItem.consultant_id) userIds.add(caseItem.consultant_id)
       })
 
-      // Fetch all profiles in one query
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('*')
-        .in('id', Array.from(userIds))
+      console.log(`Fetching ${userIds.size} profiles...`)
+      
+      // Add timeout to profile fetch as well
+      if (userIds.size > 0) {
+        try {
+          const profilesPromise = supabase
+            .from('profiles')
+            .select('*')
+            .in('id', Array.from(userIds))
+          
+          const profilesTimeout = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Profiles fetch timeout')), 8000)
+          )
+          
+          const { data: profiles } = await Promise.race([profilesPromise, profilesTimeout])
+          const profileMap = new Map(profiles?.map(p => [p.id, p]) || [])
+          
+          console.log(`Fetched ${profiles?.length || 0} profiles`)
+          return data.map(caseItem => this.transformCaseFromDB(caseItem, profileMap))
+        } catch (profileError) {
+          console.warn('Profile fetch failed, returning cases without profile data:', profileError.message)
+          // Return cases without profile data rather than failing completely
+          return data.map(caseItem => this.transformCaseFromDB(caseItem, new Map()))
+        }
+      }
 
-      const profileMap = new Map(profiles?.map(p => [p.id, p]) || [])
-
-      return data.map(caseItem => this.transformCaseFromDB(caseItem, profileMap))
+      return data.map(caseItem => this.transformCaseFromDB(caseItem, new Map()))
     } catch (error) {
       console.error('Error fetching cases:', error)
       return []
