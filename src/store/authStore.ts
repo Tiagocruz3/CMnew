@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { User } from '../types'
 import { supabaseService } from '../services/supabaseService'
-import { supabase } from '../lib/supabase'
+import { supabase, testSupabaseConnection } from '../lib/supabase'
 
 interface AuthState {
   user: User | null
@@ -73,15 +73,39 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     
     set({ isLoading: true, error: null })
     
-    // Add timeout to prevent infinite loading
+    // Test Supabase connection first
+    const isConnected = await testSupabaseConnection()
+    if (!isConnected) {
+      console.error('Supabase connection failed')
+      set({ 
+        user: null, 
+        isAuthenticated: false, 
+        isLoading: false, 
+        error: 'Unable to connect to database. Please check your connection.' 
+      })
+      return
+    }
+    
+    // Add timeout to prevent infinite loading (reduced from 10s to 5s)
     const timeoutId = setTimeout(() => {
       console.log('Auth initialization timeout - setting as unauthenticated')
-      set({ user: null, isAuthenticated: false, isLoading: false, error: null })
-    }, 10000) // 10 second timeout
+      set({ 
+        user: null, 
+        isAuthenticated: false, 
+        isLoading: false, 
+        error: 'Authentication timeout. Please try refreshing the page.' 
+      })
+    }, 5000) // 5 second timeout
     
     try {
       console.log('Initializing auth...')
-      const { data: { session } } = await supabase.auth.getSession()
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession()
+      
+      if (sessionError) {
+        console.error('Session error:', sessionError)
+        throw sessionError
+      }
+      
       console.log('Session:', session?.user?.email || 'No session')
       
       if (session?.user) {
@@ -113,7 +137,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         user: null, 
         isAuthenticated: false, 
         isLoading: false,
-        error: 'Failed to initialize authentication'
+        error: error instanceof Error ? error.message : 'Failed to initialize authentication'
       })
     }
   },
