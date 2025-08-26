@@ -86,7 +86,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       console.log('Supabase connection successful, proceeding with auth...')
     }
     
-    // Add timeout to prevent infinite loading (reduced from 10s to 5s)
+    // Add timeout to prevent infinite loading (increased to 10s for production)
     const timeoutId = setTimeout(() => {
       console.log('Auth initialization timeout - setting as unauthenticated')
       set({ 
@@ -95,11 +95,29 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         isLoading: false, 
         error: 'Authentication timeout. Please try refreshing the page.' 
       })
-    }, 5000) // 5 second timeout
+    }, 10000) // 10 second timeout
     
     try {
       console.log('Initializing auth...')
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession()
+      console.log('Calling supabase.auth.getSession()...')
+      
+      // Add timeout to getSession to prevent hanging
+      const getSessionPromise = supabase.auth.getSession()
+      const getSessionTimeout = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('getSession timeout')), 8000)
+      )
+      
+      const { data: { session }, error: sessionError } = await Promise.race([
+        getSessionPromise,
+        getSessionTimeout
+      ])
+      
+      console.log('getSession completed:', { 
+        hasSession: !!session, 
+        hasUser: !!session?.user, 
+        userEmail: session?.user?.email,
+        error: !!sessionError 
+      })
       
       if (sessionError) {
         console.error('Session error:', sessionError)
