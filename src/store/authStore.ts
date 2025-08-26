@@ -86,16 +86,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       console.log('Supabase connection successful, proceeding with auth...')
     }
     
-    // Add timeout to prevent infinite loading (increased to 10s for production)
-    const timeoutId = setTimeout(() => {
-      console.log('Auth initialization timeout - setting as unauthenticated')
-      set({ 
-        user: null, 
-        isAuthenticated: false, 
-        isLoading: false, 
-        error: 'Authentication timeout. Please try refreshing the page.' 
-      })
-    }, 10000) // 10 second timeout
+    // Add timeout to prevent infinite loading (increased to 15s for production)
+    let timeoutId: NodeJS.Timeout | null = null
+    const startTimeout = () => {
+      timeoutId = setTimeout(() => {
+        console.log('Auth initialization timeout - setting as unauthenticated')
+        set({ 
+          user: null, 
+          isAuthenticated: false, 
+          isLoading: false, 
+          error: 'Authentication timeout. Please try refreshing the page.' 
+        })
+      }, 15000) // 15 second timeout
+    }
+    
+    startTimeout()
     
     try {
       console.log('Initializing auth...')
@@ -168,7 +173,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           console.log('Profile:', profile)
           
           if (profile) {
-            clearTimeout(timeoutId)
+            if (timeoutId) clearTimeout(timeoutId)
+            timeoutId = null
             set({
               user: createUser(profile),
               isAuthenticated: true,
@@ -185,7 +191,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         
         // If profile fetch failed, create a basic user from session data
         console.log('Creating basic user from session data')
-        clearTimeout(timeoutId)
+        if (timeoutId) clearTimeout(timeoutId)
+        timeoutId = null
         set({
           user: {
             id: session.user.id,
@@ -203,11 +210,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
       
       console.log('No session or profile, setting as unauthenticated')
-      clearTimeout(timeoutId)
+      if (timeoutId) clearTimeout(timeoutId)
+      timeoutId = null
       set({ user: null, isAuthenticated: false, isLoading: false, error: null })
     } catch (error) {
       console.error('Auth initialization error:', error)
-      clearTimeout(timeoutId)
+      if (timeoutId) clearTimeout(timeoutId)
+      timeoutId = null
       // Always stop loading even on error
       set({ 
         user: null, 
