@@ -5,6 +5,44 @@ import { Database, Json } from '../types/database'
 type Tables = Database['public']['Tables']
 
 export class SupabaseService {
+  // Database connection test
+  async testDatabaseConnection(): Promise<{ connected: boolean; error?: string }> {
+    try {
+      console.log('Testing database connection with simple query...')
+      
+      // Prefer an RPC to auth endpoint which doesn't require table access
+      // Fallback to a lightweight request to the REST root
+      try {
+        const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
+        if (sessionError) {
+          console.warn('Auth session check error during DB test:', sessionError.message)
+        }
+      } catch {}
+      
+      const url = (import.meta as any).env?.VITE_SUPABASE_URL || ''
+      const key = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || ''
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 5000)
+      const res = await fetch(`${url}/rest/v1/`, {
+        method: 'GET',
+        headers: { apikey: key, Authorization: `Bearer ${key}` },
+        signal: controller.signal
+      })
+      clearTimeout(timeout)
+      
+      if (!res.ok) {
+        return { connected: false, error: `HTTP ${res.status}` }
+      }
+      
+      console.log('Database connection test successful')
+      return { connected: true }
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+      console.error('Database connection test error:', errorMessage)
+      return { connected: false, error: errorMessage }
+    }
+  }
+
   // Authentication
   async signIn(email: string, password: string) {
     const { data, error } = await supabase.auth.signInWithPassword({
@@ -24,7 +62,29 @@ export class SupabaseService {
     try {
       console.log('Getting current user...')
       
-      const { data: { user } } = await supabase.auth.getUser()
+      // Add timeout to getUser to avoid hanging
+      const getUserPromise = supabase.auth.getUser()
+      const getUserTimeout = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('getUser timeout')), 5000)
+      )
+      
+      let user: any | null = null
+      try {
+        const { data } = await Promise.race([getUserPromise, getUserTimeout]) as any
+        user = data?.user || null
+      } catch (err) {
+        console.warn('getUser timed out, attempting localStorage fallback')
+        // Try to read a stored session (same key used by Supabase)
+        try {
+          const storedSession = localStorage.getItem('sb-yvlfextlthmejhnyhapc-auth-token')
+          if (storedSession) {
+            const parsedSession = JSON.parse(storedSession)
+            if (parsedSession?.user?.id) {
+              user = { id: parsedSession.user.id, email: parsedSession.user.email }
+            }
+          }
+        } catch {}
+      }
       if (!user) return null
 
       console.log('Fetching profile for user:', user.id)
@@ -60,65 +120,50 @@ export class SupabaseService {
     try {
       console.log('Fetching cases...')
       
-      // Add timeout to prevent hanging
+      // First, test if we can even reach the database
+      console.log('Testing database connectivity...')
+      const healthCheck = await this.testDatabaseConnection()
+      
+      if (!healthCheck.connected) {
+        console.error('Database connection failed:', healthCheck.error)
+        throw new Error(`Database connection failed: ${healthCheck.error}`)
+      }
+      
+      console.log('Database connection successful, proceeding with cases fetch...')
+      
+      // Add timeout to prevent hanging. Start with a lean query (no joins)
       const casesPromise = supabase
         .from('cases')
-        .select(`
-          *,
-          communications(*),
-          documents(*),
-          case_notes(*),
-          supervisor_notes(*),
-          stakeholders(*)
-        `)
+        .select(
+          'id, worker_data, employer_data, case_manager_id, claim_number, injury_date, injury_description, first_certificate_date, planned_rtw_date, review_dates, rtw_plan, consultant_id, status, claim_type, jurisdiction, agent, wages_salary, piawe_calculation, outcome, created_at, updated_at'
+        )
         .order('created_at', { ascending: false })
+        .limit(50)
       
       const casesTimeout = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Cases fetch timeout')), 10000)
+        setTimeout(() => reject(new Error('Cases fetch timeout')), 15000)
       )
       
       const { data, error } = await Promise.race([casesPromise, casesTimeout])
       
-      if (error) throw error
+      if (error) {
+        console.error('Cases query error:', error)
+        throw error
+      }
       
       console.log(`Fetched ${data?.length || 0} cases`)
 
-      // Get all unique user IDs for batch profile lookup
-      const userIds = new Set<string>()
-      data.forEach(caseItem => {
-        if (caseItem.case_manager_id) userIds.add(caseItem.case_manager_id)
-        if (caseItem.consultant_id) userIds.add(caseItem.consultant_id)
-      })
-
-      console.log(`Fetching ${userIds.size} profiles...`)
-      
-      // Add timeout to profile fetch as well
-      if (userIds.size > 0) {
-        try {
-          const profilesPromise = supabase
-            .from('profiles')
-            .select('*')
-            .in('id', Array.from(userIds))
-          
-          const profilesTimeout = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Profiles fetch timeout')), 8000)
-          )
-          
-          const { data: profiles } = await Promise.race([profilesPromise, profilesTimeout])
-          const profileMap = new Map(profiles?.map(p => [p.id, p]) || [])
-          
-          console.log(`Fetched ${profiles?.length || 0} profiles`)
-          return data.map(caseItem => this.transformCaseFromDB(caseItem, profileMap))
-        } catch (profileError) {
-          console.warn('Profile fetch failed, returning cases without profile data:', profileError.message)
-          // Return cases without profile data rather than failing completely
-          return data.map(caseItem => this.transformCaseFromDB(caseItem, new Map()))
-        }
-      }
-
+      // Skip profile hydration to avoid extra requests; UI will render with IDs
       return data.map(caseItem => this.transformCaseFromDB(caseItem, new Map()))
     } catch (error) {
       console.error('Error fetching cases:', error)
+      
+      // If cases fetch fails, return empty array with a message
+      console.warn('Cases fetch failed, returning empty array. This might be due to:')
+      console.warn('1. No cases exist in the database yet')
+      console.warn('2. RLS policies blocking access')
+      console.warn('3. Database connection issues')
+      
       return []
     }
   }

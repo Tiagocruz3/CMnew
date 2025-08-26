@@ -13,7 +13,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
   
   if (!isAuthenticated) {
     // Redirect to the login page but save the current location
-    return <Navigate to="/login\" state={{ from: location }} replace />;
+    return <Navigate to="/login" state={{ from: location }} replace />;
   }
   
   return children ? <>{children}</> : <Outlet />;
@@ -25,11 +25,11 @@ export const AdminRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
   const location = useLocation();
   
   if (!isAuthenticated) {
-    return <Navigate to="/login\" state={{ from: location }} replace />;
+    return <Navigate to="/login" state={{ from: location }} replace />;
   }
   
   if (user?.role !== 'admin') {
-    return <Navigate to="/dashboard\" replace />;
+    return <Navigate to="/dashboard" replace />;
   }
   
   return children ? <>{children}</> : <Outlet />;

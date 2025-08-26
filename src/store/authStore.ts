@@ -86,8 +86,31 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       console.log('Supabase connection successful, proceeding with auth...')
     }
     
-    // Add timeout to prevent infinite loading (increased to 15s for production)
+    // Attempt immediate local session hydration BEFORE any timeouts/network calls
     let timeoutId: NodeJS.Timeout | null = null
+    let prehydratedSession: { user: { id: string; email?: string } } | null = null
+    try {
+      const storedSession = localStorage.getItem('sb-yvlfextlthmejhnyhapc-auth-token')
+      if (storedSession) {
+        const parsedSession = JSON.parse(storedSession)
+        if (parsedSession && parsedSession.access_token) {
+          try {
+            await supabase.auth.setSession({
+              access_token: parsedSession.access_token,
+              refresh_token: parsedSession.refresh_token
+            })
+            console.log('Pre-hydrated Supabase session from localStorage tokens')
+            prehydratedSession = { user: { id: parsedSession.user?.id, email: parsedSession.user?.email } }
+          } catch (hydrateError) {
+            console.warn('Pre-hydration setSession failed:', hydrateError)
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Pre-hydration localStorage read failed:', e)
+    }
+    
+    // Start timeout AFTER pre-hydration to avoid races on refresh
     const startTimeout = () => {
       timeoutId = setTimeout(() => {
         console.log('Auth initialization timeout - setting as unauthenticated')
@@ -99,11 +122,51 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         })
       }, 15000) // 15 second timeout
     }
-    
     startTimeout()
     
     try {
       console.log('Initializing auth...')
+      
+      // If we already have a prehydrated session, skip waiting on getSession
+      if (prehydratedSession?.user) {
+        console.log('Using prehydrated session, skipping getSession')
+        console.log('Fetching profile for user:', prehydratedSession.user.id)
+        // Try profile fetch with timeout
+        try {
+          const profilePromise = supabaseService.getCurrentUser()
+          const profileTimeout = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Profile fetch timeout')), 5000)
+          )
+          const profile = await Promise.race([profilePromise, profileTimeout])
+          if (profile) {
+            if (timeoutId) clearTimeout(timeoutId)
+            timeoutId = null
+            set({ user: createUser(profile), isAuthenticated: true, isLoading: false, error: null })
+            console.log('Auth initialized successfully (prehydrated)')
+            return
+          }
+        } catch (err) {
+          console.warn('Profile fetch failed/timed out with prehydrated session:', err instanceof Error ? err.message : err)
+        }
+        // Fallback to basic user from prehydrated session
+        if (timeoutId) clearTimeout(timeoutId)
+        timeoutId = null
+        set({
+          user: {
+            id: prehydratedSession.user.id,
+            name: prehydratedSession.user.email?.split('@')[0] || 'User',
+            email: prehydratedSession.user.email || '',
+            role: 'consultant' as const,
+            avatar: undefined
+          },
+          isAuthenticated: true,
+          isLoading: false,
+          error: null
+        })
+        console.log('Auth initialized with basic user data (prehydrated)')
+        return
+      }
+      
       console.log('Calling supabase.auth.getSession()...')
       
       // Add timeout to getSession to prevent hanging
@@ -129,8 +192,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             console.log('Found stored session in localStorage, attempting to use it')
             const parsedSession = JSON.parse(storedSession)
             if (parsedSession && parsedSession.access_token) {
+              // Hydrate Supabase auth with stored access/refresh tokens
+              try {
+                await supabase.auth.setSession({
+                  access_token: parsedSession.access_token,
+                  refresh_token: parsedSession.refresh_token
+                })
+                console.log('Supabase session hydrated from localStorage tokens')
+              } catch (hydrateError) {
+                console.warn('Failed to hydrate Supabase session from tokens:', hydrateError)
+              }
               session = { user: { id: parsedSession.user?.id, email: parsedSession.user?.email } }
               console.log('Using stored session from localStorage')
+              // Clear the overall init timeout as we do have a session now
+              if (timeoutId) clearTimeout(timeoutId)
+              timeoutId = null
             }
           }
         } catch (localStorageError) {
@@ -242,23 +318,29 @@ supabase.auth.onAuthStateChange(async (event, session) => {
       error: null 
     })
   } else if (event === 'SIGNED_IN' && session && !state.isAuthenticated) {
-    try {
-      const profile = await supabaseService.getCurrentUser()
-      
-      if (profile) {
-        useAuthStore.setState({
-          user: createUser(profile),
-          isAuthenticated: true,
-          isLoading: false,
-          error: null
-        })
+    // Set a basic user from the session immediately to avoid blocking on network
+    useAuthStore.setState({
+      user: {
+        id: session.user.id,
+        name: session.user.email?.split('@')[0] || 'User',
+        email: session.user.email || '',
+        role: 'consultant',
+        avatar: undefined
+      },
+      isAuthenticated: true,
+      isLoading: false,
+      error: null
+    })
+    // Fetch full profile in the background
+    ;(async () => {
+      try {
+        const profile = await supabaseService.getCurrentUser()
+        if (profile) {
+          useAuthStore.setState({ user: createUser(profile) })
+        }
+      } catch (err) {
+        console.warn('Background profile fetch failed:', err)
       }
-    } catch (error) {
-      console.error('Auth state change error:', error)
-      useAuthStore.setState({ 
-        isLoading: false,
-        error: 'Authentication state change failed'
-      })
-    }
+    })()
   }
 })
