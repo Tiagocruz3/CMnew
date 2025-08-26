@@ -156,20 +156,50 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       
       if (session?.user) {
         console.log('Fetching profile for user:', session.user.id)
-        const profile = await supabaseService.getCurrentUser()
-        console.log('Profile:', profile)
         
-        if (profile) {
-          clearTimeout(timeoutId)
-          set({
-            user: createUser(profile),
-            isAuthenticated: true,
-            isLoading: false,
-            error: null
-          })
-          console.log('Auth initialized successfully')
-          return
+        // Add timeout to profile fetch to prevent hanging
+        try {
+          const profilePromise = supabaseService.getCurrentUser()
+          const profileTimeout = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Profile fetch timeout')), 5000)
+          )
+          
+          const profile = await Promise.race([profilePromise, profileTimeout])
+          console.log('Profile:', profile)
+          
+          if (profile) {
+            clearTimeout(timeoutId)
+            set({
+              user: createUser(profile),
+              isAuthenticated: true,
+              isLoading: false,
+              error: null
+            })
+            console.log('Auth initialized successfully')
+            return
+          }
+        } catch (profileError) {
+          console.warn('Profile fetch failed or timed out:', profileError.message)
+          // Continue without profile - we'll create a basic user object
         }
+        
+        // If profile fetch failed, create a basic user from session data
+        console.log('Creating basic user from session data')
+        clearTimeout(timeoutId)
+        set({
+          user: {
+            id: session.user.id,
+            name: session.user.email?.split('@')[0] || 'User',
+            email: session.user.email || '',
+            role: 'consultant' as const,
+            avatar: undefined
+          },
+          isAuthenticated: true,
+          isLoading: false,
+          error: null
+        })
+        console.log('Auth initialized with basic user data')
+        return
       }
       
       console.log('No session or profile, setting as unauthenticated')
