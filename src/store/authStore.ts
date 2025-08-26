@@ -107,10 +107,37 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         setTimeout(() => reject(new Error('getSession timeout')), 8000)
       )
       
-      const { data: { session }, error: sessionError } = await Promise.race([
-        getSessionPromise,
-        getSessionTimeout
-      ])
+      let session, sessionError
+      try {
+        const result = await Promise.race([
+          getSessionPromise,
+          getSessionTimeout
+        ])
+        session = result.data.session
+        sessionError = result.error
+      } catch (timeoutError) {
+        console.warn('getSession timed out, proceeding without session check:', timeoutError.message)
+        // Try to get session from localStorage as fallback
+        try {
+          const storedSession = localStorage.getItem('sb-yvlfextlthmejhnyhapc-auth-token')
+          if (storedSession) {
+            console.log('Found stored session in localStorage, attempting to use it')
+            const parsedSession = JSON.parse(storedSession)
+            if (parsedSession && parsedSession.access_token) {
+              session = { user: { id: parsedSession.user?.id, email: parsedSession.user?.email } }
+              console.log('Using stored session from localStorage')
+            }
+          }
+        } catch (localStorageError) {
+          console.warn('Error reading localStorage session:', localStorageError)
+        }
+        
+        if (!session) {
+          // Continue without session - user will need to log in
+          session = null
+          sessionError = null
+        }
+      }
       
       console.log('getSession completed:', { 
         hasSession: !!session, 
@@ -121,7 +148,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       
       if (sessionError) {
         console.error('Session error:', sessionError)
-        throw sessionError
+        // Don't throw error, just continue without session
+        session = null
       }
       
       console.log('Session:', session?.user?.email || 'No session')
