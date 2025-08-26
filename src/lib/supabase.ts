@@ -35,12 +35,28 @@ export const STORAGE_BUCKETS = {
 // Test connection - use a simple health check that doesn't require authentication
 export const testSupabaseConnection = async () => {
   try {
-    // Test basic connectivity by checking if we can reach Supabase
-    // We'll use a simple ping approach that doesn't require table access
-    const { data, error } = await supabase.auth.getSession()
+    console.log('Connection test: Starting...')
     
-    // If we can reach the auth endpoint, the connection is working
-    // We don't care about the actual session data here
+    // Test basic connectivity by making a simple request to Supabase
+    // We'll use a timeout to prevent hanging
+    const connectionPromise = fetch(`${supabaseUrl}/rest/v1/`, {
+      method: 'GET',
+      headers: {
+        'apikey': supabaseAnonKey,
+        'Authorization': `Bearer ${supabaseAnonKey}`
+      }
+    })
+    
+    // Add a 5-second timeout
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Connection timeout')), 5000)
+    )
+    
+    const response = await Promise.race([connectionPromise, timeoutPromise])
+    
+    console.log('Connection test: Response received', { status: response.status })
+    
+    // If we get any response, the connection is working
     console.log('Supabase connection test successful')
     return true
   } catch (err) {
